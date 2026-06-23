@@ -188,22 +188,34 @@ def _format_unsafe_installation_message(identity: DistributionIdentity) -> str:
     )
 
 
+def _iter_named_distributions(distribution_name: str) -> list[metadata.Distribution]:
+    """Return every installed distribution record matching ``distribution_name``."""
+    normalized = distribution_name.lower()
+    return [
+        dist
+        for dist in metadata.distributions()
+        if (dist.metadata.get("Name") or "").lower() == normalized
+    ]
+
+
 def assert_safe_distribution(distribution_name: str = DISTRIBUTION_NAME) -> None:
     """Abort when the installed distribution metadata is not this project.
 
     Source checkouts that have not been installed as a distribution are allowed:
     ``uv --directory /path/to/telegram-mcp run main.py`` can run from source
-    without package metadata. If metadata for ``telegram-mcp`` is present, it
-    must come from an explicit git or file install recorded by the installer.
+    without package metadata. If metadata for ``telegram-mcp`` is present, at
+    least one record must come from an explicit git or file install recorded
+    by the installer.
     """
 
-    try:
-        dist = metadata.distribution(distribution_name)
-    except metadata.PackageNotFoundError:
+    identities = [
+        DistributionIdentity.from_distribution(dist)
+        for dist in _iter_named_distributions(distribution_name)
+    ]
+    if not identities:
         return
 
-    identity = DistributionIdentity.from_distribution(dist)
-    if _looks_like_explicit_source_install(identity):
+    if any(_looks_like_explicit_source_install(identity) for identity in identities):
         return
 
-    raise UnsafeInstallationError(_format_unsafe_installation_message(identity))
+    raise UnsafeInstallationError(_format_unsafe_installation_message(identities[0]))

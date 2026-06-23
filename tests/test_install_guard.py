@@ -93,10 +93,10 @@ def test_install_guard_rejects_spoofed_metadata_without_trusted_origin():
 
 
 def test_install_guard_allows_source_checkout_without_distribution(monkeypatch):
-    def raise_missing(_distribution_name):
-        raise metadata.PackageNotFoundError
+    def empty_distributions():
+        return iter(())
 
-    monkeypatch.setattr(install_guard.metadata, "distribution", raise_missing)
+    monkeypatch.setattr(install_guard.metadata, "distributions", empty_distributions)
 
     install_guard.assert_safe_distribution()
 
@@ -127,8 +127,8 @@ def test_install_guard_allows_uv_editable_source_checkout_without_direct_url(
 
     monkeypatch.setattr(
         install_guard.metadata,
-        "distribution",
-        lambda _distribution_name: FakeDistribution(),
+        "distributions",
+        lambda: [FakeDistribution()],
     )
 
     install_guard.assert_safe_distribution()
@@ -145,10 +145,13 @@ def test_install_guard_raises_for_untrusted_installed_distribution(monkeypatch):
             self.metadata["Author"] = "Furkan Kucuk <furkankucuk.dev@gmail.com>"
             self.metadata["Project-URL"] = "Homepage, https://example.com/unrelated"
 
+        def read_text(self, _filename):
+            return None
+
     monkeypatch.setattr(
         install_guard.metadata,
-        "distribution",
-        lambda _distribution_name: FakeDistribution(),
+        "distributions",
+        lambda: [FakeDistribution()],
     )
 
     with pytest.raises(install_guard.UnsafeInstallationError, match="Refusing to start"):
@@ -173,8 +176,89 @@ def test_install_guard_allows_fork_distribution_with_direct_url(monkeypatch):
 
     monkeypatch.setattr(
         install_guard.metadata,
-        "distribution",
-        lambda _distribution_name: FakeDistribution(),
+        "distributions",
+        lambda: [FakeDistribution()],
     )
 
     install_guard.assert_safe_distribution()
+
+
+def _fake_distribution_from_identity(identity):
+    class FakeDistribution:
+        version = identity.version
+
+        def __init__(self):
+            self.metadata = Message()
+            self.metadata["Name"] = identity.name
+            self.metadata["Version"] = identity.version
+            if identity.authors:
+                self.metadata["Author"] = identity.authors[0]
+            for url in identity.urls:
+                self.metadata["Project-URL"] = url
+            self.files = []
+            self._path = None
+
+        def read_text(self, filename):
+            if filename != "direct_url.json":
+                return None
+            return identity.direct_url or None
+
+    return FakeDistribution
+
+
+def test_assert_safe_distribution_accepts_single_valid_distribution(monkeypatch):
+    identity = _identity()
+    monkeypatch.setattr(
+        install_guard.metadata,
+        "distributions",
+        lambda: [_fake_distribution_from_identity(identity)()],
+    )
+
+    install_guard.assert_safe_distribution()
+
+
+def test_assert_safe_distribution_accepts_when_any_duplicate_is_valid(monkeypatch, tmp_path):
+    invalid = _identity(
+        version="0.6.3",
+        authors=("Furkan Kucuk <furkankucuk.dev@gmail.com>",),
+        direct_url="",
+    )
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "telegram-mcp"\n', encoding="utf-8")
+
+    class ValidEggDistribution:
+        version = "source-version"
+
+        def __init__(self):
+            self._path = tmp_path / "telegram_mcp.egg-info"
+            self.files = []
+            self.metadata = Message()
+            self.metadata["Name"] = "telegram-mcp"
+            self.metadata["Version"] = "source-version"
+
+        def read_text(self, _filename):
+            return None
+
+    monkeypatch.setattr(
+        install_guard.metadata,
+        "distributions",
+        lambda: [_fake_distribution_from_identity(invalid)(), ValidEggDistribution()],
+    )
+
+    install_guard.assert_safe_distribution()
+
+
+def test_assert_safe_distribution_rejects_when_all_duplicates_invalid(monkeypatch):
+    invalid_one = _identity(version="0.6.3", direct_url="")
+    invalid_two = _identity(version="9.9.9", direct_url="")
+
+    monkeypatch.setattr(
+        install_guard.metadata,
+        "distributions",
+        lambda: [
+            _fake_distribution_from_identity(invalid_one)(),
+            _fake_distribution_from_identity(invalid_two)(),
+        ],
+    )
+
+    with pytest.raises(install_guard.UnsafeInstallationError, match="Refusing to start"):
+        install_guard.assert_safe_distribution()

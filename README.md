@@ -33,6 +33,7 @@ Message sent successfully:
 - [Proxy Support](#proxy-support)
 - [File Path Security](#file-path-security)
 - [Docker](#docker)
+- [Railway Deployment](#railway-deployment)
 - [Development](#development)
 - [Security Notes](#security-notes)
 - [Troubleshooting](#troubleshooting)
@@ -349,6 +350,88 @@ docker run -it --rm \
 ```
 
 For multiple accounts, pass variables such as `TELEGRAM_SESSION_STRING_WORK` and `TELEGRAM_SESSION_STRING_PERSONAL`.
+
+## Railway Deployment
+
+Deploy this server to [Railway](https://railway.app/) when you need a public MCP endpoint
+(for example, [Dify Cloud](https://dify.ai/) MCP integrations). Railway runs the server
+with **Streamable HTTP** transport; local Claude Desktop / Cursor setups continue to use
+**stdio** unchanged.
+
+### 1. Generate a session string locally
+
+Interactive login is not available inside the deployed container. Generate a session string
+on your machine first:
+
+```bash
+uv run session_string_generator.py --qr
+# or
+uv run session_string_generator.py --phone
+```
+
+Copy the output value for `TELEGRAM_SESSION_STRING`.
+
+### 2. Configure Railway environment variables
+
+Set these in the Railway service **Variables** tab:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `TELEGRAM_API_ID` | Yes | Telegram API ID from [my.telegram.org/apps](https://my.telegram.org/apps) |
+| `TELEGRAM_API_HASH` | Yes | Telegram API hash |
+| `TELEGRAM_SESSION_STRING` | Yes | Session string from `session_string_generator.py` |
+| `MCP_API_KEY` | Yes (production) | Bearer token required for `/mcp` HTTP requests |
+| `PORT` | Auto | Set by Railway; do not hardcode |
+| `TELEGRAM_EXPOSED_TOOLS` | No | `all` (default) or `read-only` |
+
+Prefer `TELEGRAM_SESSION_STRING` over `TELEGRAM_SESSION_NAME` on Railway. Ephemeral
+filesystems do not persist `.session` files across redeploys.
+
+### 3. Deploy
+
+This repository includes `railway.json` and a `Procfile`. Railway uses the Docker build
+and starts the server with:
+
+```bash
+telegram-mcp --transport streamable-http --host 0.0.0.0 --port $PORT
+```
+
+After deploy, the MCP endpoint is:
+
+```text
+https://<your-railway-domain>/mcp
+```
+
+Use that full URL (path must end with `/mcp`) when adding the MCP server in Dify Cloud.
+
+### 4. Connect Dify Cloud
+
+In Dify Cloud, add a custom MCP server and set:
+
+- **Server URL:** `https://<your-railway-domain>/mcp`
+- **Transport:** Streamable HTTP (selected automatically when the URL ends with `/mcp`)
+- **Authorization:** `Bearer <MCP_API_KEY>` (when `MCP_API_KEY` is configured on Railway)
+
+Railway health checks use `GET /health` and do not require authentication.
+
+Dify Cloud may route outbound MCP requests through an SSRF proxy. If you receive a **403**
+when connecting, the Railway domain may need to be allowlisted on the Dify Cloud side.
+
+### Local streamable-http testing
+
+```bash
+uv run main.py --transport streamable-http --host 0.0.0.0 --port 8000
+# with auth:
+MCP_API_KEY=local-dev-secret uv run main.py --transport streamable-http --host 0.0.0.0 --port 8000
+```
+
+Stdio mode remains the default:
+
+```bash
+uv run main.py
+# equivalent to:
+uv run main.py --transport stdio
+```
 
 ## Development
 

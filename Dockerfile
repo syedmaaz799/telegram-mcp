@@ -12,19 +12,11 @@ ENV PYTHONUNBUFFERED=1
 # Install system dependencies if needed (e.g., for certain Python packages)
 # RUN apt-get update && apt-get install -y --no-install-recommends some-package && rm -rf /var/lib/apt/lists/*
 
-# Copy dependency definition files
-# If using Poetry:
-# COPY pyproject.toml poetry.lock* ./
-# RUN pip install --no-cache-dir poetry
-# RUN poetry config virtualenvs.create false && poetry install --no-dev --no-interaction --no-ansi
-# If using pip with requirements.txt:
-COPY requirements.txt ./
-RUN pip install --no-cache-dir --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the rest of the application code
-COPY main.py sanitize.py ./
+# Copy dependency definition files and application code
+COPY pyproject.toml main.py sanitize.py ./
 COPY telegram_mcp ./telegram_mcp
+RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir .
 # COPY session_string_generator.py . # Optional: if needed within the container, otherwise can be run outside
 
 # Create a non-root user and switch to it
@@ -41,8 +33,8 @@ ENV TELEGRAM_SESSION_NAME="telegram_mcp_session"
 # Or provide the session string directly
 ENV TELEGRAM_SESSION_STRING=""
 
-# Expose any ports if the application were a web server (not needed for stdio MCP)
-# EXPOSE 8000
+# Expose the default streamable-http port (Railway sets PORT at runtime).
+EXPOSE 8000
 
-# Define the command to run the application
+# Default to stdio for local Docker/Compose usage. Railway overrides via startCommand.
 CMD ["python", "main.py"]

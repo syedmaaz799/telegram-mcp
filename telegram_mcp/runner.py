@@ -26,7 +26,27 @@ async def _connect_authorized_client(label, client) -> None:
     )
 
 
-async def _main() -> None:
+async def _run_mcp_server(config: ServerCliConfig) -> None:
+    if config.transport == "stdio":
+        await mcp.run_stdio_async()
+        return
+
+    if config.transport == "streamable-http":
+        _apply_mcp_http_settings(config.host, config.port)
+        http_path = mcp.settings.streamable_http_path
+        auth_mode = "enabled" if os.getenv("MCP_API_KEY", "").strip() else "disabled"
+        print(
+            f"Running MCP streamable-http on http://{config.host}:{config.port}{http_path} "
+            f"(auth: {auth_mode})",
+            file=sys.stderr,
+        )
+        await _serve_streamable_http(config.host, config.port)
+        return
+
+    raise SystemExit(f"Unknown transport: {config.transport}")
+
+
+async def _main(config: ServerCliConfig) -> None:
     try:
         labels = ", ".join(clients.keys())
         print(f"Starting {len(clients)} Telegram client(s) ({labels})...", file=sys.stderr)
@@ -48,11 +68,13 @@ async def _main() -> None:
             except Exception as warm_exc:
                 print(f"Entity cache warm failed: {warm_exc}", file=sys.stderr)
 
-        warm_task = asyncio.create_task(_warm_caches())
+        asyncio.create_task(_warm_caches())
 
-        print(f"Telegram client(s) started ({labels}). Running MCP server...", file=sys.stderr)
-        # Use the asynchronous entrypoint instead of mcp.run()
-        await mcp.run_stdio_async()
+        print(
+            f"Telegram client(s) started ({labels}). Running MCP server ({config.transport})...",
+            file=sys.stderr,
+        )
+        await _run_mcp_server(config)
     except Exception as e:
         print(f"Error starting client: {e}", file=sys.stderr)
         if isinstance(e, sqlite3.OperationalError) and "database is locked" in str(e):
@@ -71,10 +93,10 @@ async def _main() -> None:
 
 
 def main() -> None:
-    _configure_allowed_roots_from_cli(sys.argv[1:])
+    config = _parse_server_cli(sys.argv[1:])
     _runtime._apply_exposed_tools_mode()
     nest_asyncio.apply()
-    asyncio.run(_main())
+    asyncio.run(_main(config))
 
 
 if __name__ == "__main__":

@@ -718,6 +718,37 @@ def test_configure_allowed_roots_from_cli_updates_runtime_and_main_alias(tmp_pat
         runtime._configure_allowed_roots_from_cli([str(tmp_path / "missing")])
 
 
+def test_parse_server_cli_defaults(monkeypatch):
+    monkeypatch.delenv("PORT", raising=False)
+    config = runtime._parse_server_cli([])
+    assert config.transport == "stdio"
+    assert config.host == "0.0.0.0"
+    assert config.port == 8000
+    assert config.allowed_roots == ()
+
+
+def test_parse_server_cli_respects_port_env_and_streamable_transport(monkeypatch):
+    monkeypatch.setenv("PORT", "9001")
+    config = runtime._parse_server_cli(
+        ["--transport", "streamable-http", "--host", "127.0.0.1", "--port", "7000"]
+    )
+    assert config.transport == "streamable-http"
+    assert config.host == "127.0.0.1"
+    assert config.port == 7000
+
+
+def test_apply_mcp_http_settings_updates_fastmcp_settings():
+    runtime._apply_mcp_http_settings("0.0.0.0", 8123)
+    assert runtime.mcp.settings.host == "0.0.0.0"
+    assert runtime.mcp.settings.port == 8123
+
+
+def test_fastmcp_streamable_http_api_is_available():
+    assert hasattr(runtime.mcp, "streamable_http_app")
+    assert hasattr(runtime.mcp, "run_streamable_http_async")
+    assert runtime.mcp.settings.streamable_http_path == "/mcp"
+
+
 def test_main_compatibility_wrappers_are_exported():
     assert main.send_message is not None
     assert main.validate_id is runtime.validate_id

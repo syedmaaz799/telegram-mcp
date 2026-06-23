@@ -8,8 +8,9 @@ import sqlite3
 import logging
 import mimetypes
 from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
 from enum import Enum
-from typing import List, Dict, Optional, Union, Any
+from typing import List, Dict, Optional, Union, Any, Literal
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -102,7 +103,11 @@ load_dotenv()
 TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID"))
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
 
-mcp = FastMCP("telegram")
+mcp = FastMCP(
+    "telegram",
+    host="0.0.0.0",
+    port=int(os.getenv("PORT", "8000")),
+)
 
 # Annotate all tool results with audience=["user"] so MCP clients know
 # the content is user-generated data, not instructions for the model.
@@ -135,6 +140,23 @@ def _install_annotation_hook() -> None:
 
 
 _install_annotation_hook()
+
+
+def _register_http_routes() -> None:
+    """Register HTTP routes used by streamable-http deployments."""
+    if getattr(mcp, "_http_routes_registered", False):
+        return
+
+    @mcp.custom_route("/health", methods=["GET"])
+    async def health(_request):
+        from starlette.responses import JSONResponse
+
+        return JSONResponse({"status": "ok"})
+
+    mcp._http_routes_registered = True
+
+
+_register_http_routes()
 
 
 _EXPOSED_TOOLS_MODES = {"all", "read-only"}
@@ -1105,7 +1127,21 @@ async def _resolve_writable_file_path(
     return candidate, None
 
 
-def _configure_allowed_roots_from_cli(argv: Optional[List[str]] = None) -> None:
+@dataclass(frozen=True)
+class ServerCliConfig:
+    """CLI configuration for MCP server transport and file-path roots."""
+
+    transport: Literal["stdio", "streamable-http"]
+    host: str
+    port: int
+    allowed_roots: tuple[Path, ...]
+
+
+def _default_server_port() -> int:
+    return int(os.getenv("PORT", "8000"))
+
+
+def _parse_server_cli(argv: Optional[List[str]] = None) -> ServerCliConfig:
     parser = argparse.ArgumentParser(
         prog="telegram-mcp",
         add_help=False,
@@ -1113,6 +1149,23 @@ def _configure_allowed_roots_from_cli(argv: Optional[List[str]] = None) -> None:
             "Optional positional arguments define server-side allowed roots "
             "for file-path tools."
         ),
+    )
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "streamable-http"],
+        default="stdio",
+        help="MCP transport (default: stdio).",
+    )
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="HTTP bind host for streamable-http transport (default: 0.0.0.0).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=_default_server_port(),
+        help="HTTP bind port for streamable-http transport (default: PORT env or 8000).",
     )
     parser.add_argument("allowed_roots", nargs="*")
     parsed, _unknown = parser.parse_known_args(argv or [])
@@ -1127,6 +1180,44 @@ def _configure_allowed_roots_from_cli(argv: Optional[List[str]] = None) -> None:
 
     global SERVER_ALLOWED_ROOTS
     SERVER_ALLOWED_ROOTS = _dedupe_paths(resolved_roots)
+
+    return ServerCliConfig(
+        transport=parsed.transport,
+        host=parsed.host,
+        port=parsed.port,
+        allowed_roots=tuple(SERVER_ALLOWED_ROOTS),
+    )
+
+
+def _apply_mcp_http_settings(host: str, port: int) -> None:
+    """Apply HTTP bind settings before starting streamable-http transport."""
+    mcp.settings.host = host
+    mcp.settings.port = port
+
+
+async def _serve_streamable_http(host: str, port: int) -> None:
+    """Run the streamable HTTP MCP server with optional API-key auth."""
+    import uvicorn
+
+    from telegram_mcp.http_auth import ApiKeyAuthMiddleware
+
+    app = mcp.streamable_http_app()
+    api_key = os.getenv("MCP_API_KEY", "").strip()
+    if api_key:
+        app = ApiKeyAuthMiddleware(app, api_key)
+
+    config = uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        log_level=mcp.settings.log_level.lower(),
+    )
+    server = uvicorn.Server(config)
+    await server.serve()
+
+
+def _configure_allowed_roots_from_cli(argv: Optional[List[str]] = None) -> None:
+    _parse_server_cli(argv)
 
 
 # Re-export shared runtime names for tool modules that use star imports.
